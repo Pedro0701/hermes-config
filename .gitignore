@@ -1,0 +1,43 @@
+# ── Secrets (NUNCA versionar) ──────────────────────────────────────────
+# API keys, OAuth tokens, senhas
+.env
+auth.json
+gateway_state.json
+channel_directory.json
+processes.json
+models_dev_cache.json
+provider_models_cache.json
+ollama_cloud_models_cache.json
+*.lock
+gateway.pid
+
+# ── Runtime (regenerável) ────────────────────────────────────────────
+# Logs, caches, sessões, state DB (muito grande, não versionar)
+state.db
+state.db-*
+verification_evidence.db
+projects.db
+cache/
+logs/
+sessions/
+audio_cache/
+image_cache/
+images/
+pastes/
+spawn-trees/
+sandboxes/
+lsp/
+node/
+plugins/
+platforms/
+hooks/
+hermes-agent/
+
+# ── Temporários ───────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.history
+interrupt_debug.log
+gateway-starts.log
+.scratch_tip_shown
+.update_check
