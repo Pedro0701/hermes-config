@@ -1,7 +1,7 @@
 ---
 name: database-backup-restoration
 description: "Use when restoring database backups (any SGBD) into Docker containers — format detection, decompression, SGBD identification, Docker lifecycle, deduplication, SQL-Server-first migration from MySQL/PostgreSQL/Firebird, and Telegram notification of credentials."
-version: 1.21.0
+version: 1.23.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -319,6 +319,45 @@ SQL Server, `root`/`Sofia@2024!` for MySQL.
 SHA-256 of binary content (not filename) as the dedup key. Store in SQLite
 at `sistemas_migrados/registro_backups.db`.
 
+### Health check — dedup DB integrity
+
+A dedup DB with **zero tables** is a critical failure mode: every backup appears
+"new" and will be reprocessed, even if already restored. This wastes hours
+filtering and re-importing multi-GB dumps.
+
+Diagnóstico rápido:
+```bash
+cd /home/hermes/conversor-backups
+python3 -c "
+import sqlite3, sys
+conn = sqlite3.connect('sistemas_migrados/registro_backups.db')
+tables = conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()
+print(f'Tabelas: {[t[0] for t in tables]}')
+if not tables:
+    print('⚠️  DEDUP VAZIO — sem tabelas! Backups existentes serão reprocessados.')
+    sys.exit(1)
+else:
+    rows = conn.execute('SELECT COUNT(*) FROM registro').fetchone()
+    print(f'Registros: {rows[0]}')
+"
+```
+
+Se vazio, recriar a estrutura e registrar manualmente os backups já restaurados
+consultando `sys.databases` no SQL Server:
+
+```bash
+cd /home/hermes/conversor-backups
+# 1. Recriar schema
+python3 -c "from registro_backups import RegistroBackups; RegistroBackups()"
+
+# 2. Listar DBs no SQL Server e registrar
+sg docker -c "docker exec sqlserver_migrados /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Sofia@2024!' -Q \"SELECT name, CAST(SUM(size)*8/1024 AS VARCHAR(20)) + ' MB' AS size_mb FROM sys.master_files f JOIN sys.databases d ON f.database_id = d.database_id WHERE d.name NOT IN ('master','tempdb','model','msdb') GROUP BY d.name ORDER BY d.name\""
+```
+
+> ⚠️ Ao registrar manualmente, use o hash SHA-256 real do arquivo original para
+> evitar colisões. O nome sozinho não é suficiente (múltiplas versões do mesmo
+> cliente podem ter o mesmo nome mas conteúdo diferente).
+
 ### Reset stuck registrations
 When a restore fails mid-way, the dedup registry stays `EM_ANDAMENTO`:
 ```python
@@ -471,6 +510,54 @@ Baixando do Google Drive e preparando ambiente...
 | Stuck EM_ANDAMENTO | Job died mid-way | Reset dedup entry → re-run |
 | Dedup says CONCLUIDO but DB gone | Credentials fail | Verify DB exists, if gone reset dedup and re-import |
 | Export skipped | Job CONCLUIDO but no CSVs | Run export manually via `export_engine` CLI |
+| Dedup DB empty/corrupted | No tables in `registro_backups.db`; MCP reprocesses already-restored backups | Check dedup integrity → recriar schema → registrar DBs existentes no SQL Server manualmente (ver "Deduplication > Health check") |
+| MCP job stuck RESTAURANDO | Job shows RESTAURANDO for >30min; MCP health shows `restore_lock: true` | Check MCP container logs → kill container's restore process → remove lock dir (`data/.migbot_mcp.lock/`) → reset job → re-run |
+| Kanban worker zombie | Worker process alive but no heartbeat for >15min; task stuck `running` indefinitely | Check `ps aux \| grep hermes kanban` for PID → kill process → `hermes kanban promote` or reassign task → dispatcher picks up new run |
+
+### Complete System Reset
+
+When the user requests a "clean slate" — remove all converted databases, clear kanban, wipe dedup, purge staging — follow this **ordered sequence** to avoid permission errors and orphaned locks:
+
+```bash
+# 1. Drop ALL non-system databases in SQL Server
+sg docker -c "docker exec sqlserver_migrados /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Sofia@2024!' -Q \"
+DECLARE @name NVARCHAR(255)
+DECLARE db_cursor CURSOR FOR SELECT name FROM sys.databases WHERE name NOT IN ('master','tempdb','model','msdb')
+OPEN db_cursor; FETCH NEXT FROM db_cursor INTO @name
+WHILE @@FETCH_STATUS = 0 BEGIN
+  EXEC('DROP DATABASE [' + @name + ']')
+  FETCH NEXT FROM db_cursor INTO @name END
+CLOSE db_cursor; DEALLOCATE db_cursor\""
+
+# 2. Drop non-system databases in MySQL
+sg docker -c "docker exec mysql_migrados mysql -uroot -p'Sofia@2024!' -e \"DROP DATABASE IF EXISTS \`um_novadimensao\`\""
+
+# 3. Archive completed kanban tasks + complete stuck ones
+hermes kanban list | grep done | awk '{print $1}' | xargs -r hermes kanban archive
+hermes kanban list | grep running | awk '{print $1}' | xargs -r hermes kanban complete
+hermes kanban list | grep running | awk '{print $1}' | xargs -r hermes kanban archive
+
+# 4. Remove MCP job files (stored in data/jobs/, not migbot/jobs/)
+rm -f /home/hermes/conversor-backups/data/jobs/*.json
+
+# 5. Remove dedup + learn databases
+rm -f /home/hermes/conversor-backups/data/registro_backups.db
+rm -f /home/hermes/conversor-backups/data/conhecimento_backups.db
+rm -f /home/hermes/conversor-backups/sistemas_migrados/registro_backups.db
+
+# 6. [CRITICAL] Clean staging via container (files are root-owned)
+sg docker -c "docker exec migbot_mcp rm -rf /app/data/staging/*/ /app/data/.migbot_mcp.lock/"
+
+# 7. Restart MCP to pick up clean state
+sg docker -c "docker restart migbot_mcp"
+sleep 2
+
+# 8. Verify
+curl -s http://localhost:8901/health  # restore_lock: false
+curl -s http://localhost:8901/jobs?limite=5  # total: 0
+```
+
+**Important:** Do NOT skip step 6. Staging files and the MCP lock are created by the container as root (uid 0) and cannot be `rm -rf`'d from the host as user `hermes`. The `docker exec` approach is the only reliable way to clean them.
 
 ## Common Pitfalls
 
@@ -551,11 +638,18 @@ Baixando do Google Drive e preparando ambiente...
     and should be N, try `sep=";"`.
 27. **Runtime SQLite databases and job files forgotten in .gitignore.** 
     The project produces several runtime artifacts that must NOT be versioned:
-    `migbot/conhecimento_backups.db` (learn engine), `sistemas_migrados/registro_backups.db`
-    (dedup), `migbot/jobs/*.json` (job state), and `*.db` anywhere. Missing these in
-    `.gitignore` causes dirty commits, merge conflicts, and repo bloat. Verify with a
-    script: create a temp git init, copy `.gitignore`, touch each artifact path, run
-    `git status --porcelain` — tracked means the pattern is missing.
+    `data/conhecimento_backups.db` (learn engine), `data/registro_backups.db`
+    (dedup — MCP variant), `sistemas_migrados/registro_backups.db`
+    (dedup — legacy variant), `data/jobs/*.json` (MCP job state — JOBS_BASE = DATA_DIR / "jobs"),
+    and `*.db` anywhere. Missing these in `.gitignore` causes dirty commits,
+    merge conflicts, and repo bloat. Verify with a script: create a temp git init,
+    copy `.gitignore`, touch each artifact path, run `git status --porcelain` —
+    tracked means the pattern is missing.
+    
+    > ⚠️ Note: `data/jobs/*.json` is the MCP server runtime path (used by
+    > `job_manager.py`). The old `migbot/jobs/` directory is for legacy/CLI usage
+    > and may not be the active path. Always check `JOBS_BASE` in `config.py`
+    > to confirm which directory the running MCP actually uses.
 
 28. **`sg docker -c` fails inside containers (root user, no `docker` group).**
     When `firebird_format.py` (or any restore code) runs inside a container like `migbot_mcp`,
@@ -702,8 +796,33 @@ Baixando do Google Drive e preparando ambiente...
 
 42. **Kanban board statuses `triage`, `todo`, `scheduled` are hardcoded in Hermes core and cannot be removed.** They do not interfere with the Migbot flow (the watchdog creates tasks directly as `ready`), but they cannot be deleted from the SQLite schema or CLI. Simply ignore them — they cost nothing.
 
+43. **Dedup DB empty (no tables) causes full reprocessing of already-restored backups.** When `registro_backups.db` has no tables (corrupted, deleted, or recreated), the MCP restore_backup receives every backup as "new". A 12.5GB dump gets re-filtered, re-imported into MySQL, and re-migrated to SQL Server even though the database already exists. **Fix:** Always check `SELECT name FROM sqlite_master WHERE type='table'` before trusting dedup. If empty, recriar schema and register existing databases manually. See "Deduplication > Health check".
+
+44. **MCP job stuck in RESTAURANDO blocks all new restores.** The MCP uses a file-based lock (`data/.migbot_mcp.lock/`). If a restore crashes mid-way, the MCP job status stays `RESTAURANDO` and the lock stays held. Subsequent `restore_backup` calls return `OCUPADO`. **Fix:** Check lock timestamp (`stat data/.migbot_mcp.lock/`) — if >30min old, kill the restore process inside the container, remove the lock dir, and reset the job status via `POST /backups/reset`.
+
+45. **Kanban worker can become zombie after a crash.** When the kanban worker process dies (crash, OOM), Hermes dispatcher spawns a new run but the old task stays `running`. The new run may start with stale state. **Symptom:** Task shows `running` status but `hermes kanban show` events show a gap and a "crashed" entry. **Fix:** Verify `hermes kanban show <task_id>` — if there's a crashed run and the current run pid is alive but not heartbeating, kill the PID and let the dispatcher respawn. Or `hermes kanban promote` to force a new dispatch.
+
+46. **SQL Server password works via `docker exec` but fails from network peers.** The containers use network overlay (172.x.x.x). If SQL Server rejects login from a container IP, the password is correct but the container hostname or DNS may not resolve. **Fix:** Always use `-C` (trust server cert) and `-S localhost` when inside the same container, or `-S sqlserver_migrados` when inside the same Docker network. Env vars like `SA_PASSWORD` are read at container start and cannot be changed without restart.
+
+47. **Staging files and MCP lock are root-owned and cannot be deleted from host.** The MCP container (`migbot_mcp`) runs as root. When it copies/downloads/extracts files to the bind-mounted `data/staging/`, those files are created with uid 0 (root). The host user (`hermes`, uid 1000) gets `Permission denied` on any `rm -rf`. **Fix:** Always clean staging via `docker exec`:
+    ```bash
+    sg docker -c "docker exec migbot_mcp rm -rf /app/data/staging/*/"
+    ```
+    Same for the MCP lock:
+    ```bash
+    sg docker -c "docker exec migbot_mcp rm -rf /app/data/.migbot_mcp.lock/"
+    ```
+    Also applies to any root-owned `.sql` or `.json` files under `data/` that the container produced.
+
+48. **MCP jobs persist in JSON files under `data/jobs/`, not in the dedup DB.** The `job_manager.py` stores each job as a separate `.json` file in `JOBS_BASE` (which resolves to `DATA_DIR / "jobs"` → `data/jobs/` on host). Deleting `registro_backups.db` does NOT clear these. The MCP server reloads them on restart. **Fix:** To truly reset MCP job state, delete both the dedup DB *and* all JSON files:
+    ```bash
+    rm -f data/registro_backups.db data/conhecimento_backups.db data/jobs/*.json
+    sg docker -c "docker restart migbot_mcp"
+    ```
+
 ## References
 
+- `references/verificar-conversao-travada.md` — Diagnóstico de conversão travada: dedup vazio, MCP job stuck, worker zumbi, checklist completo
 - `references/mcp-only-architecture.md` — MCP como única via de restauração (NUNCA migbot_bot.py direto no host)
 - `docs/FLUXO_PROJETO.md` (in repo) — full end-to-end project flow with token table and directory architecture
 - `references/portability.md` — Export/import project between VPS (scripts + hermes-config repo)
@@ -727,5 +846,5 @@ Baixando do Google Drive e preparando ambiente...
 - `scripts/watchdog-gdrive.py` — Reference watchdog script (legacy, kanban preferred)
 - `scripts/migbot_kanban_watchdog.sh` — Active kanban watchdog
 
-*(The old `scripts/sofia_kanban_watchdog.sh` was renamed to `migbot_kanban_watchdog.sh` in
+**(The old `scripts/sofia_kanban_watchdog.sh` was renamed to `migbot_kanban_watchdog.sh` in
 the repo. Update any cron that still points to the old name.)*
