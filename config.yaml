@@ -152,9 +152,7 @@ platform_toolsets:
     - hermes-google_chat
 mcp_servers:
   migbot:
-    command: python3
-    args:
-      - /home/hermes/conversor-backups/mcp_server.py
+    url: http://localhost:8901/mcp
     enabled: true
 
 # ── Security ──────────────────────────────────────────────────────────

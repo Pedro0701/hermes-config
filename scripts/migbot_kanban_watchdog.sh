@@ -8,11 +8,19 @@
 set -euo pipefail
 
 # --- Config ---
-PROJETO="/home/hermes/conversor-backups"
-REGISTRO_DB="$PROJETO/sistemas_migrados/registro_backups.db"
-BACKUP_REMOTO="gdrive:1.Profissional/Conversosr/Backup/"
-STAGING="$PROJETO/staging/pendentes"
-LOCKS_DIR="$PROJETO/staging/.watchdog_locks"
+PROJETO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Quando copiado para ~/.hermes/scripts/, o /.. sobe para ~/.hermes/ em vez
+# do projeto. Usa realpath pra ir até o repositório.
+case "$(basename "$PROJETO")" in
+    .hermes|hermes)
+        PROJETO="/home/hermes/conversor-backups"
+        ;;
+esac
+REGISTRO_DB="$PROJETO/data/registro_backups.db"
+# Rota remota: manter em sincronia com RCLONE_REMOTE_BACKUP em migbot/core/config.py
+BACKUP_REMOTO="gdrive:1.Profissional/Conversor/Backup/"
+STAGING="$PROJETO/data/staging/pendentes"
+LOCKS_DIR="$PROJETO/data/staging/.watchdog_locks"
 LOCK_TTL_SEGUNDOS=7200  # mesmo teto do --max-runtime da task kanban
 PYTHONPATH="$PROJETO"
 export PATH="$HOME/bin:$PATH"
@@ -20,12 +28,14 @@ export PATH="$HOME/bin:$PATH"
 mkdir -p "$LOCKS_DIR"
 
 # --- Lista backups no Drive (sem -R, top-level) ---
+# NOTA: não usar --format "stp" porque o timestamp (t) causa timeout
+# no Google Drive com muitos itens. "sp" (size + path) é mais rápido.
 MAPFILE=()
-while IFS='|' read -r tamanho data nome; do
+while IFS='|' read -r tamanho nome; do
     nome="${nome%/}"  # remove trailing /
     [[ -z "$nome" ]] && continue
     MAPFILE+=("$nome")
-done < <(rclone lsf "$BACKUP_REMOTO" --format "stp" --separator "|" 2>/dev/null)
+done < <(rclone lsf "$BACKUP_REMOTO" --format "sp" --separator "|" 2>/dev/null)
 
 if [[ ${#MAPFILE[@]} -eq 0 ]]; then
     exit 0  # silêncio — nada a fazer

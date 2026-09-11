@@ -22,15 +22,15 @@
       "schedule_display": "every 15m",
       "repeat": {
         "times": null,
-        "completed": 812
+        "completed": 837
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-07-22T07:09:57.488073-03:00",
-      "next_run_at": "2026-09-10T15:21:55.243882-03:00",
-      "last_run_at": "2026-09-10T15:06:55.243882-03:00",
+      "next_run_at": "2026-09-10T21:29:52.426185-03:00",
+      "last_run_at": "2026-09-10T21:14:52.426185-03:00",
       "last_status": "ok",
       "last_error": null,
       "last_delivery_error": null,
@@ -39,7 +39,46 @@
       "enabled_toolsets": null,
       "workdir": null,
       "fire_claim": null
+    },
+    {
+      "id": "d63f88effb6b",
+      "name": "Hermes Config Sync",
+      "prompt": "Executar bash ~/hermes-config/sync.sh push para sincronizar a configuracao do Hermes com o GitHub.",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "provider_snapshot": "openrouter",
+      "model_snapshot": "deepseek/deepseek-v4-flash",
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "interval",
+        "minutes": 360,
+        "display": "every 360m"
+      },
+      "schedule_display": "every 360m",
+      "repeat": {
+        "times": null,
+        "completed": 0
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-09-10T15:27:18.815283-03:00",
+      "next_run_at": "2026-09-11T03:27:58.643459-03:00",
+      "last_run_at": null,
+      "last_status": null,
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "local",
+      "origin": null,
+      "enabled_toolsets": null,
+      "workdir": null
     }
   ],
-  "updated_at": "2026-09-10T15:06:55.244349-03:00"
+  "updated_at": "2026-09-10T21:27:58.643659-03:00"
 }
