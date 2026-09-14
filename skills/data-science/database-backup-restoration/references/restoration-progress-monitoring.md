@@ -136,11 +136,29 @@ A restore is likely stuck if ALL of:
 - No new files in staging dir in >5min
 - No new log entries in the job JSON
 
-In that case, the lock is held by the MCP. The only recovery options:
-- Wait for the MCP's 2h lock TTL to expire (`restore_lock` auto-clears)
-- Restart the MCP container: `docker restart migbot_mcp`
+In that case, the lock is held by the MCP. **Since 2026-09-11 you usually
+don't need to do anything** — an internal watchdog thread inside `migbot_mcp`
+checks every ~60s and, if the active job has no new log entry for
+`MIGBOT_MCP_STALL_TIMEOUT` (default 1800s/30min), marks it `FALHA`, releases
+the lock, and restarts the process itself (`restart: unless-stopped` brings
+it back clean). Check `health().watchdog` — `job_ativo` and
+`job_parado_ha_segundos` show exactly what it's watching and for how long.
+
+Manual recovery is now only for the two windows the watchdog doesn't cover
+(before its own timeout, or if you need to preserve the stuck process for
+diagnosis instead of killing it):
+- Wait for the watchdog (up to 30min) — usually the simplest option now
+- Restart the MCP container yourself, sooner: `docker restart migbot_mcp`
+  (then clear `data/.migbot_mcp.lock/` — the disk lock doesn't auto-clear on
+  restart, only the watchdog's own cycle does that)
 - Reset dedup entry and retry with a fresh job
+
+See `2026-09-11-async-restore-e-watchdog.md` for the incident that led to
+this and `kanban_watchdog_travado.py` (Hermes cron, `--no-agent`) for the
+matching watchdog at the kanban/worker layer (catches a worker that goes
+silent even when the MCP job itself is fine).
 
 **Do NOT manually kill PID 1 inside the container** — it's the uvicorn process
 and will terminate all in-flight operations, then auto-restart via Docker's
-restart policy.
+restart policy (same effect as the watchdog, just without marking the job
+FALHA first).

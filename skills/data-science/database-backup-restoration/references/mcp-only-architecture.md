@@ -47,7 +47,7 @@ Worker move resultado/exportação no Drive
 |------|--------|
 | `health()` | Estado do servidor + bancos |
 | `list_backups_on_drive()` | Consulta pendentes no Drive |
-| `restore_backup(caminho, sgbd, senha)` | Pipeline completo |
+| `restore_backup(caminho, sgbd, senha)` | Dispara o pipeline — **assíncrono desde 2026-09-11**: devolve `job_id` em <1s, acompanhar com `status_job` (ver 2026-09-11-async-restore-e-watchdog.md) |
 | `reset_backup(hash_ou_prefixo)` | Libera dedup p/ reprocessamento |
 | `verificar_backup(nome)` | Consulta dedup |
 | `listar_backups()` | Últimos backups registrados |
